@@ -119,6 +119,25 @@ python gradio_panst3r.py --weights /path/to/model/weights
 > [!CAUTION]
 > Using `--allow_local_files` allows users to load images from a local path where the server is hosted. Use with caution.
 
+### Running headless inference (no frontend)
+
+If you do not want to run the Gradio demo, you can run the same multi-view inference pipeline directly from a CLI script:
+
+```bash
+python tools/infer_panst3r.py \
+  --weights /path/to/model/weights \
+  --input /path/to/image_folder \
+  --output_dir /path/to/output_dir
+```
+
+This script performs the same core inference stages as the demo (image loading/resizing, `forward_inference_multi_ar`, panoptic post-processing), and writes:
+
+- panoptic id maps (`*_panoptic_ids.npy`)
+- panoptic visualizations (`*_panoptic_vis.png`)
+- geometric predictions (`*_geometry.npz` with `pts3d`, `pts3d_local`, `conf`)
+- merged scene point cloud (`scene_pointcloud.ply`, configurable with `--scene_conf_thr`)
+- `segments_info.json` and `inference_config.json`
+
 ### Checkpoints
 
 The following checkpoints are available for download. We include PQ scores obtained via direct multi-view prediction on the rendered test images (without LUDVIG).

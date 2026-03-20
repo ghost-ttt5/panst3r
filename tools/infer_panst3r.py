@@ -16,6 +16,7 @@ from must3r.model import get_pointmaps_activation
 from must3r.tools.image import get_resize_function, is_valid_pil_image_file
 from must3r.engine.inference import postprocess
 from must3r.model.blocks.attention import toggle_memory_efficient_attention, has_xformers
+from dust3r.viz import rgb
 
 from panst3r import PanSt3R
 from panst3r.class_names import CLASS_NAMES
@@ -39,6 +40,10 @@ def get_args_parser() -> argparse.ArgumentParser:
     parser.add_argument('--device', type=str, default='cuda', help='PyTorch device.')
     parser.add_argument('--amp', choices=['False', 'bf16', 'fp16'], default='False',
                         help='Automatic mixed precision mode.')
+    parser.add_argument('--scene_conf_thr', type=float, default=3.0,
+                        help='Confidence threshold used for exported scene point cloud.')
+    parser.add_argument('--no_export_scene', action='store_true',
+                        help='Disable exporting merged scene point cloud PLY.')
     parser.add_argument('--verbose', action='store_true')
     return parser
 
@@ -86,6 +91,50 @@ def resolve_input(input_value: str) -> list[Path]:
     if len(image_paths) == 0:
         raise ValueError('No valid input images found.')
     return image_paths
+
+
+def save_scene_pointcloud_ply(
+    output_path: Path,
+    x_out: list[dict],
+    imgs: list[torch.Tensor],
+    true_shape: torch.Tensor,
+    min_conf_thr: float = 3.0,
+) -> int:
+    points_all = []
+    colors_all = []
+
+    for i, pred in enumerate(x_out):
+        pts3d = pred['pts3d'].cpu().numpy().reshape(-1, 3)
+        conf = pred['conf'].cpu().numpy().reshape(-1)
+
+        rgb_i = rgb(imgs[i].cpu(), true_shape[i].cpu()).reshape(-1, 3).astype(np.uint8)
+        valid = np.isfinite(pts3d).all(axis=-1) & np.isfinite(conf) & (conf >= min_conf_thr)
+
+        if np.any(valid):
+            points_all.append(pts3d[valid])
+            colors_all.append(rgb_i[valid])
+
+    if len(points_all) == 0:
+        raise ValueError('No valid points remained after confidence filtering; scene point cloud was not exported.')
+
+    points = np.concatenate(points_all, axis=0)
+    colors = np.concatenate(colors_all, axis=0)
+
+    with output_path.open('w', encoding='utf-8') as f:
+        f.write('ply\n')
+        f.write('format ascii 1.0\n')
+        f.write(f'element vertex {points.shape[0]}\n')
+        f.write('property float x\n')
+        f.write('property float y\n')
+        f.write('property float z\n')
+        f.write('property uchar red\n')
+        f.write('property uchar green\n')
+        f.write('property uchar blue\n')
+        f.write('end_header\n')
+        for p, c in zip(points, colors):
+            f.write(f'{p[0]} {p[1]} {p[2]} {int(c[0])} {int(c[1])} {int(c[2])}\n')
+
+    return int(points.shape[0])
 
 
 @torch.no_grad()
@@ -155,6 +204,8 @@ def main(args: argparse.Namespace) -> None:
         'use_retrieval': args.use_retrieval,
         'amp': amp,
         'device': args.device,
+        'scene_conf_thr': args.scene_conf_thr,
+        'export_scene': not args.no_export_scene,
     }, indent=2, ensure_ascii=False))
 
     for idx, image_path in enumerate(image_paths):
@@ -168,6 +219,16 @@ def main(args: argparse.Namespace) -> None:
             pts3d_local=x_out[idx]['pts3d_local'].cpu().numpy(),
             conf=x_out[idx]['conf'].cpu().numpy(),
         )
+
+    if not args.no_export_scene:
+        num_points = save_scene_pointcloud_ply(
+            output_path=output_dir / 'scene_pointcloud.ply',
+            x_out=x_out,
+            imgs=imgs,
+            true_shape=true_shape,
+            min_conf_thr=args.scene_conf_thr,
+        )
+        print(f'Exported merged scene point cloud with {num_points} points: {output_dir / "scene_pointcloud.ply"}')
 
     print(f'Inference completed. Results saved to: {output_dir}')
 

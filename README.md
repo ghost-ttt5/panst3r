@@ -135,7 +135,7 @@ This script performs the same core inference stages as the demo (image loading/r
 - panoptic id maps (`*_panoptic_ids.npy`)
 - panoptic visualizations (`*_panoptic_vis.png`)
 - geometric predictions (`*_geometry.npz` with `pts3d`, `pts3d_local`, `conf`)
-- merged scene point cloud (`scene_pointcloud.ply`, configurable with `--scene_conf_thr`)
+- merged scene point cloud (`scene_pointcloud.ply`, configurable with `--scene_conf_thr`, `--scene_color_mode`, `--scene_ply_format`)
 - `segments_info.json` and `inference_config.json`
 
 ### Checkpoints

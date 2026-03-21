@@ -42,6 +42,10 @@ def get_args_parser() -> argparse.ArgumentParser:
                         help='Automatic mixed precision mode.')
     parser.add_argument('--scene_conf_thr', type=float, default=3.0,
                         help='Confidence threshold used for exported scene point cloud.')
+    parser.add_argument('--scene_color_mode', choices=['rgb', 'panoptic'], default='rgb',
+                        help='Color source for exported scene point cloud.')
+    parser.add_argument('--scene_ply_format', choices=['binary', 'ascii'], default='binary',
+                        help='PLY serialization format for exported scene point cloud.')
     parser.add_argument('--no_export_scene', action='store_true',
                         help='Disable exporting merged scene point cloud PLY.')
     parser.add_argument('--verbose', action='store_true')
@@ -98,7 +102,10 @@ def save_scene_pointcloud_ply(
     x_out: list[dict],
     imgs: list[torch.Tensor],
     true_shape: torch.Tensor,
+    pan_vis: list[np.ndarray],
     min_conf_thr: float = 3.0,
+    color_mode: str = 'rgb',
+    file_format: str = 'binary',
 ) -> int:
     points_all = []
     colors_all = []
@@ -107,7 +114,10 @@ def save_scene_pointcloud_ply(
         pts3d = pred['pts3d'].cpu().numpy().reshape(-1, 3)
         conf = pred['conf'].cpu().numpy().reshape(-1)
 
-        rgb_i = rgb(imgs[i].cpu(), true_shape[i].cpu()).reshape(-1, 3).astype(np.uint8)
+        if color_mode == 'panoptic':
+            rgb_i = pan_vis[i].reshape(-1, 3).astype(np.uint8)
+        else:
+            rgb_i = rgb(imgs[i].cpu(), true_shape[i].cpu()).reshape(-1, 3).astype(np.uint8)
         valid = np.isfinite(pts3d).all(axis=-1) & np.isfinite(conf) & (conf >= min_conf_thr)
 
         if np.any(valid):
@@ -119,20 +129,57 @@ def save_scene_pointcloud_ply(
 
     points = np.concatenate(points_all, axis=0)
     colors = np.concatenate(colors_all, axis=0)
+    points = points.astype(np.float32, copy=False)
+    colors = colors.astype(np.uint8, copy=False)
 
-    with output_path.open('w', encoding='utf-8') as f:
-        f.write('ply\n')
-        f.write('format ascii 1.0\n')
-        f.write(f'element vertex {points.shape[0]}\n')
-        f.write('property float x\n')
-        f.write('property float y\n')
-        f.write('property float z\n')
-        f.write('property uchar red\n')
-        f.write('property uchar green\n')
-        f.write('property uchar blue\n')
-        f.write('end_header\n')
-        for p, c in zip(points, colors):
-            f.write(f'{p[0]} {p[1]} {p[2]} {int(c[0])} {int(c[1])} {int(c[2])}\n')
+    if file_format == 'ascii':
+        with output_path.open('w', encoding='utf-8') as f:
+            f.write('ply\n')
+            f.write('format ascii 1.0\n')
+            f.write(f'element vertex {points.shape[0]}\n')
+            f.write('property float x\n')
+            f.write('property float y\n')
+            f.write('property float z\n')
+            f.write('property uchar red\n')
+            f.write('property uchar green\n')
+            f.write('property uchar blue\n')
+            f.write('end_header\n')
+            for p, c in zip(points, colors):
+                f.write(f'{p[0]} {p[1]} {p[2]} {int(c[0])} {int(c[1])} {int(c[2])}\n')
+    else:
+        with output_path.open('wb') as f:
+            header = '\n'.join([
+                'ply',
+                'format binary_little_endian 1.0',
+                f'element vertex {points.shape[0]}',
+                'property float x',
+                'property float y',
+                'property float z',
+                'property uchar red',
+                'property uchar green',
+                'property uchar blue',
+                'end_header\n',
+            ])
+            f.write(header.encode('ascii'))
+
+            vertices = np.empty(
+                points.shape[0],
+                dtype=[
+                    ('x', '<f4'),
+                    ('y', '<f4'),
+                    ('z', '<f4'),
+                    ('red', 'u1'),
+                    ('green', 'u1'),
+                    ('blue', 'u1'),
+                ],
+            )
+            vertices['x'] = points[:, 0]
+            vertices['y'] = points[:, 1]
+            vertices['z'] = points[:, 2]
+            vertices['red'] = colors[:, 0]
+            vertices['green'] = colors[:, 1]
+            vertices['blue'] = colors[:, 2]
+            vertices.tofile(f)
 
     return int(points.shape[0])
 
@@ -205,6 +252,8 @@ def main(args: argparse.Namespace) -> None:
         'amp': amp,
         'device': args.device,
         'scene_conf_thr': args.scene_conf_thr,
+        'scene_color_mode': args.scene_color_mode,
+        'scene_ply_format': args.scene_ply_format,
         'export_scene': not args.no_export_scene,
     }, indent=2, ensure_ascii=False))
 
@@ -226,7 +275,10 @@ def main(args: argparse.Namespace) -> None:
             x_out=x_out,
             imgs=imgs,
             true_shape=true_shape,
+            pan_vis=pan_vis,
             min_conf_thr=args.scene_conf_thr,
+            color_mode=args.scene_color_mode,
+            file_format=args.scene_ply_format,
         )
         print(f'Exported merged scene point cloud with {num_points} points: {output_dir / "scene_pointcloud.ply"}')
 
